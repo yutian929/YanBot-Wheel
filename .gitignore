@@ -1,0 +1,9 @@
+# ./
+build/
+devel/
+thirdparties/
+*.bag
+.vscode/
+
+# ./src/imu
+/src/imu/imu_tools/
