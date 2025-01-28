@@ -4,6 +4,7 @@ devel/
 thirdparties/
 *.bag
 .vscode/
+/*.csv
 
 # ./src/imu
 /src/imu/imu_tools/

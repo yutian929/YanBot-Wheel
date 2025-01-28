@@ -1,14 +1,27 @@
+#!/usr/bin/env python
 import socket
 import json
 import csv
 from datetime import datetime
 from json.decoder import JSONDecodeError
+import rospy
+from sensor_msgs.msg import Imu
+from std_msgs.msg import Header
+import threading
 
 
 class SensorDataServer:
     def __init__(self):
+        # ROS节点初始化
+        rospy.init_node("imu_iphone_data", anonymous=True)
+        self.imu_pub = rospy.Publisher("/topic_imu", Imu, queue_size=10)
+        self.frame_id = rospy.get_param(
+            "~imu_frame_id", "imu_link"
+        )  # 可从参数服务器获取frame_id
+
+        # 网络通信参数
         self.server_port = 54321
-        self.buffer_size = 4096  # 适当增大缓冲区
+        self.buffer_size = 4096
         self.running = True
         self.data_buffer = b""
 
@@ -38,6 +51,14 @@ class SensorDataServer:
                 ]
             )
 
+        # 注册ROS关闭钩子
+        rospy.on_shutdown(self.shutdown)
+
+    def shutdown(self):
+        """ROS关闭时的清理操作"""
+        self.running = False
+        rospy.loginfo("正在关闭传感器数据服务器...")
+
     def get_local_ip(self):
         """获取本机局域网IP地址"""
         try:
@@ -52,24 +73,27 @@ class SensorDataServer:
     def start_server(self):
         """启动传感器数据服务器"""
         host_ip = self.get_local_ip()
-        print(f"\n\033[1;36m=== 传感器数据接收服务器 ===\033[0m")
-        print(f"本机IP: \033[1;32m{host_ip}\033[0m")
-        print(f"监听端口: {self.server_port}")
-        print("等待手机连接... (Ctrl+C 退出)")
+        rospy.loginfo(f"\n=== 传感器数据接收服务器 ===")
+        rospy.loginfo(f"本机IP: {host_ip}")
+        rospy.loginfo(f"监听端口: {self.server_port}")
+        rospy.loginfo("等待手机连接... (Ctrl+C 退出)")
 
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server_socket.bind(("0.0.0.0", self.server_port))
         server_socket.listen(1)
+        server_socket.settimeout(1)  # 设置超时以定期检查运行状态
 
         try:
             while self.running:
-                client_socket, addr = server_socket.accept()
-                print(f"\n\033[1;32m新的连接来自: {addr[0]}\033[0m")
-                self.handle_client(client_socket)
-
-        except KeyboardInterrupt:
-            print("\n服务器正在关闭...")
+                try:
+                    client_socket, addr = server_socket.accept()
+                    rospy.loginfo(f"\n新的连接来自: {addr[0]}")
+                    self.handle_client(client_socket)
+                except socket.timeout:
+                    continue
+        except Exception as e:
+            rospy.logwarn(f"服务器异常: {str(e)}")
         finally:
             server_socket.close()
 
@@ -81,44 +105,36 @@ class SensorDataServer:
                 if not data:
                     break
 
-                # 累积数据到缓冲区
                 self.data_buffer += data
-
-                # 处理缓冲区中的所有完整JSON对象
                 while True:
-                    # 查找JSON对象边界
                     start_idx = self.data_buffer.find(b"{")
                     end_idx = (
                         self.data_buffer.find(b"}", start_idx + 1)
                         if start_idx != -1
                         else -1
                     )
-
-                    # 没有完整对象时退出循环
                     if start_idx == -1 or end_idx == -1:
                         break
 
-                    # 提取并处理单个JSON对象
                     json_data = self.data_buffer[start_idx : end_idx + 1]
                     self.data_buffer = self.data_buffer[end_idx + 1 :]
                     self.process_json(json_data)
 
         except (ConnectionResetError, BrokenPipeError):
-            print("\033[1;31m客户端连接异常断开\033[0m")
+            rospy.logwarn("客户端连接异常断开")
         except Exception as e:
-            print(f"处理数据时发生错误: {str(e)}")
+            rospy.logerr(f"处理数据时发生错误: {str(e)}")
         finally:
             client_socket.close()
 
     def process_json(self, json_bytes):
-        """解析和处理JSON数据"""
+        """解析JSON数据并发布IMU消息"""
         try:
-            # 转换JSON并验证基本结构
             data = json.loads(json_bytes.decode("utf-8"))
             if "motionPitch" not in data:
                 return
 
-            # 数据类型转换
+            # 转换传感器数据
             sensor_data = {
                 "timestamp": float(data.get("msg-time-sent", 0)),
                 "logging_time": data.get("loggingTime", ""),
@@ -140,39 +156,67 @@ class SensorDataServer:
                 "quat_z": float(data.get("motionQuaternionZ", 0)),
             }
 
-            # 打印数据摘要
-            self.print_sensor_data(sensor_data)
+            # 创建并填充IMU消息
+            imu_msg = Imu()
+            imu_msg.header = Header()
+            imu_msg.header.stamp = rospy.Time.from_sec(sensor_data["timestamp"])
+            imu_msg.header.frame_id = self.frame_id
 
-            # 保存到CSV
-            self.save_to_csv(sensor_data)
+            # 四元数数据
+            imu_msg.orientation.w = sensor_data["quat_w"]
+            imu_msg.orientation.x = sensor_data["quat_x"]
+            imu_msg.orientation.y = sensor_data["quat_y"]
+            imu_msg.orientation.z = sensor_data["quat_z"]
+
+            # 角速度数据（单位：rad/s）
+            imu_msg.angular_velocity.x = sensor_data["gyro_x"]
+            imu_msg.angular_velocity.y = sensor_data["gyro_y"]
+            imu_msg.angular_velocity.z = sensor_data["gyro_z"]
+
+            # 线加速度数据（单位：m/s²）
+            imu_msg.linear_acceleration.x = sensor_data["accel_x"]
+            imu_msg.linear_acceleration.y = sensor_data["accel_y"]
+            imu_msg.linear_acceleration.z = sensor_data["accel_z"]
+
+            # 协方差矩阵（-1表示未知）
+            imu_msg.orientation_covariance[0] = -1
+            imu_msg.angular_velocity_covariance = [0] * 9
+            imu_msg.linear_acceleration_covariance = [0] * 9
+
+            # 发布IMU消息
+            self.imu_pub.publish(imu_msg)
+
+            # 保留原始数据记录功能
+            self.print_sensor_data(sensor_data)
+            # self.save_to_csv(sensor_data)
 
         except JSONDecodeError:
-            print("JSON解析失败，原始数据:", json_bytes)
+            rospy.logwarn("JSON解析失败，原始数据: %s", json_bytes)
         except ValueError as e:
-            print(f"数据转换错误: {str(e)}")
+            rospy.logerr(f"数据转换错误: {str(e)}")
         except KeyError as e:
-            print(f"缺少必要字段: {str(e)}")
+            rospy.logerr(f"缺少必要字段: {str(e)}")
 
     def print_sensor_data(self, data):
-        """格式化打印传感器数据"""
-        print(
+        """格式化打印传感器数据（可选）"""
+        rospy.logdebug(
             f"\n[{datetime.fromtimestamp(data['timestamp']).strftime('%H:%M:%S.%f')}]"
         )
-        print(
+        rospy.logdebug(
             f"姿态角: Pitch={data['pitch']:.4f}, Roll={data['roll']:.4f}, Yaw={data['yaw']:.4f}"
         )
-        print(
+        rospy.logdebug(
             f"加速度: X={data['accel_x']:.6f}, Y={data['accel_y']:.6f}, Z={data['accel_z']:.6f} m/s²"
         )
-        print(
+        rospy.logdebug(
             f"陀螺仪: X={data['gyro_x']:.6f}, Y={data['gyro_y']:.6f}, Z={data['gyro_z']:.6f} rad/s"
         )
-        print(
+        rospy.logdebug(
             f"四元数: W={data['quat_w']:.4f}, X={data['quat_x']:.4f}, Y={data['quat_y']:.4f}, Z={data['quat_z']:.4f}"
         )
 
     def save_to_csv(self, data):
-        """保存数据到CSV文件"""
+        """保存数据到CSV文件（可选）"""
         with open("sensor_data.csv", "a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(
@@ -201,4 +245,14 @@ class SensorDataServer:
 
 if __name__ == "__main__":
     server = SensorDataServer()
-    server.start_server()
+
+    # 在独立线程中运行TCP服务器
+    server_thread = threading.Thread(target=server.start_server)
+    server_thread.start()
+
+    # 主线程运行ROS spin
+    rospy.spin()
+
+    # ROS关闭后清理
+    server.running = False
+    server_thread.join()
