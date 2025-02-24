@@ -5,7 +5,12 @@ thirdparties/
 *.bag
 .vscode/
 /*.csv
+ROS1_tutorials/
 
 # ./src/imu
 /src/imu/imu_tools/
 /src/imu/imu_pkg/scripts/*.csv
+
+
+# ./src/wheeltec
+/src/wheeltec_noetic_src/
