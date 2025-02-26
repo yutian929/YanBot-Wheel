@@ -8,6 +8,15 @@ check_success() {
     fi
 }
 
+sudo apt install python3-pip
+check_success
+
+sudo apt-get install libuvc-dev
+check_success
+
+sudo apt-get install libgeographic-dev
+check_success
+
 rosdep install --from-paths src --ignore-src -r -y
 check_success
 
@@ -35,23 +44,22 @@ check_success
 sudo apt install libcjson1 libcjson-dev
 check_success
 
+sudo apt install ros-noetic-robot-pose-ekf
+check_success
+
+sudo apt install ros-noetic-rtabmap-ros
+check_success
+
 echo "如果要编译bodyreader,需要下载ASTRA SDK,并且安装,然后将2个lib添加至bashrc变量,具体见/bodyreader/CMakeLists.txt"
-cd thirdparties/AstraSDK/
+cd src/thirdparties/AstraSDK/
 bash install/install.sh
 check_success
+SDK_PATH=`pwd`
 echo "export ASTRA_SDK_INCLUDE=$SDK_PATH/include" >> ~/.bashrc
 echo "export ASTRA_SDK_LIB=$SDK_PATH/lib" >> ~/.bashrc
 check_success
 source ~/.bashrc
 check_success
-cd ../../
+cd ../../../
 
-catkin_make --pkg lslidar_msgs lslidar_driver lslidar # 先编译lslidar的包
-check_success
-
-
-
-
-
-# catkin_make
-# check_success
+echo "还需要移植.rules文件到/etc/udev/rules.d/目录下"

@@ -6,7 +6,9 @@ thirdparties/
 .vscode/
 /*.csv
 ROS1_tutorials/
-
+logs/
+backup/
+.catkin_tools/
 # ./src/imu
 /src/imu/imu_tools/
 /src/imu/imu_pkg/scripts/*.csv
